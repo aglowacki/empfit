@@ -85,8 +85,14 @@ namespace data_struct
 
 //-----------------------------------------------------------------------------
 
-enum class Fit_Bound {NOT_INIT=0, FIXED=1, LIMITED_LO_HI=2, LIMITED_LO=3, LIMITED_HI=4, FIT=5};
+enum class Fit_Bound {FIXED=1, LIMITED_LO_HI=2, LIMITED_LO=3, LIMITED_HI=4, FIT=5};
 
+enum class Derivative {AutoOneSide=0, OneSide=1, NegOneSide=-1, TwoSide=2, User=3};
+    // 0 - one-sided derivative computed automatically
+	// 1 - one-sided derivative (f(x+h) - f(x)  )/h
+    // -1 - one-sided derivative (f(x)   - f(x-h))/h
+	// 2 - two-sided derivative (f(x+h) - f(x-h))/(2*h) 
+	// 3 - user-computed analytical derivatives}
 //-----------------------------------------------------------------------------
 
 //template<typename T>
@@ -101,17 +107,22 @@ using ArrayTr = Eigen::Array<_T, Eigen::Dynamic, Eigen::RowMajor>;
  * @brief The Fit_Param struct : Structure that holds a parameter which consists of a value, min, max, and if it should be used in the fit routine.
  *                                Many fit routines use arrays so there are convert to and from array functions.
  */
-template<typename T_real>
+template<typename T>
 struct DLL_EXPORT Fit_Param
 {
     Fit_Param()
     {
         name = "N/A";
-        min_val = std::numeric_limits<T_real>::quiet_NaN();
-        max_val = std::numeric_limits<T_real>::quiet_NaN();
-        value = std::numeric_limits<T_real>::quiet_NaN();
-        step_size = std::numeric_limits<T_real>::quiet_NaN();
-        bound_type = Fit_Bound::NOT_INIT;
+        min_val = std::numeric_limits<T>::quiet_NaN();
+        max_val = std::numeric_limits<T>::quiet_NaN();
+        value = std::numeric_limits<T>::quiet_NaN();
+        step_size = std::numeric_limits<T>::quiet_NaN();
+        relstep = std::numeric_limits<T>::quiet_NaN();
+        side = Derivative::AutoOneSide;
+        deriv_reltol = std::numeric_limits<T>::quiet_NaN();
+        deriv_abstol = std::numeric_limits<T>::quiet_NaN();
+        bound_type = Fit_Bound::FIXED;
+        debug = false;
     }
 
     Fit_Param(const Fit_Param& param)
@@ -121,56 +132,88 @@ struct DLL_EXPORT Fit_Param
         max_val = param.max_val;
         value = param.value;
         step_size = param.step_size;
+        relstep = param.relstep;
+        deriv_reltol = param.deriv_reltol;
+        deriv_abstol = param.deriv_abstol;
+        side = param.side;
+        bound_type = param.bound_type;
+        debug = param.debug;
+    }
+    /*
+    Fit_Param(const Fit_Param&& param)
+    {
+        name = param.name;
+        min_val = param.min_val;
+        max_val = param.max_val;
+        value = param.value;
+        step_size = param.step_size;
+        relstep = param.relstep;
+        side = param.side;
         bound_type = param.bound_type;
     }
-
+    */
     Fit_Param(std::string name_)
     {
         name = name_;
-        min_val = std::numeric_limits<T_real>::quiet_NaN();
-        max_val = std::numeric_limits<T_real>::quiet_NaN();
-        value = std::numeric_limits<T_real>::quiet_NaN();
-        step_size = std::numeric_limits<T_real>::quiet_NaN();
-        bound_type = Fit_Bound::NOT_INIT;
+        min_val = std::numeric_limits<T>::quiet_NaN();
+        max_val = std::numeric_limits<T>::quiet_NaN();
+        value = std::numeric_limits<T>::quiet_NaN();
+        step_size = std::numeric_limits<T>::quiet_NaN();
+        relstep = std::numeric_limits<T>::quiet_NaN();
+        deriv_reltol = std::numeric_limits<T>::quiet_NaN();
+        deriv_abstol = std::numeric_limits<T>::quiet_NaN();
+        side = Derivative::AutoOneSide;
+        bound_type = Fit_Bound::FIXED;
+        debug = false;
     }
 
-    Fit_Param(std::string name_, T_real val_)
+    Fit_Param(std::string name_, T val_)
     {
         name = name_;
-        min_val = std::numeric_limits<T_real>::min();
-        max_val = std::numeric_limits<T_real>::max();
-        step_size = (T_real)0.000001;
+        min_val = std::numeric_limits<T>::min();
+        max_val = std::numeric_limits<T>::max();
+        step_size = val_ *(T)0.0001;
+        relstep = val_ * (T)0.00001;
         value = val_;
+        deriv_reltol = (T)0.0;
+        deriv_abstol = (T)0.0;
+        side = Derivative::AutoOneSide;
         bound_type = Fit_Bound::FIXED;
+        debug = false;
     }
 
-	Fit_Param(std::string name_, T_real val_, Fit_Bound b_type)
+	Fit_Param(std::string name_, T val_, Fit_Bound b_type)
 	{
 		name = name_;
-		min_val = std::numeric_limits<T_real>::min();
-		max_val = std::numeric_limits<T_real>::max();
-		step_size = (T_real)0.000001;
+		min_val = std::numeric_limits<T>::min();
+		max_val = std::numeric_limits<T>::max();
+		step_size = val_ *(T)0.0001;
+        relstep = val_ * (T)0.00001;
+        deriv_reltol = std::numeric_limits<T>::quiet_NaN();
+        deriv_abstol = std::numeric_limits<T>::quiet_NaN();
 		value = val_;
+        side = Derivative::AutoOneSide;
 		bound_type = b_type;
+        debug = false;
 	}
 
-    Fit_Param(std::string name_, T_real min_, T_real max_, T_real val_, T_real step_size_, Fit_Bound b_type)
+    Fit_Param(std::string name_, T min_, T max_, T val_, T step_size_, T relstep_, Derivative side_, Fit_Bound b_type)
     {
         name = name_;
         min_val = min_;
         max_val = max_;
         value = val_;
+        relstep = relstep_;
         bound_type = b_type;
+        side = side_;
         step_size = step_size_;
+        debug = false;
     }
 
     const std::string bound_type_str() const
     {
         switch (bound_type)
         {
-            case Fit_Bound::NOT_INIT:
-                return "Not Initialized";
-                break;
             case Fit_Bound::FIXED:
                 return "Fixed";
                 break;
@@ -191,11 +234,16 @@ struct DLL_EXPORT Fit_Param
     }
 
     std::string name;
-    T_real min_val;
-    T_real max_val;
-    T_real value;
-    T_real step_size;
+    T min_val;
+    T max_val;
+    T value;
+    T step_size;
+    T relstep;
+    T deriv_reltol;
+    T deriv_abstol;
+    Derivative side; 
     Fit_Bound bound_type;
+    bool debug;
 };
 
 

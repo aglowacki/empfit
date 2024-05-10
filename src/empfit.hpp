@@ -266,7 +266,6 @@ struct Result
   int nfev;            // Number of function evaluations 
   Errors status;          // Fitting status code 
   
-  int npar;            // Total number of parameters 
   int nfree;           // Number of free parameters 
   int npegged;         // Number of pegged parameters 
   int nfunc;           // Number of residuals (= num. of data points) 
@@ -279,45 +278,7 @@ struct Result
 
 
 //-----------------------------------------------------------------------------------------------------------
-/*
-   *     **********
-   *
-   *     function enorm
-   *
-   *     given an n-vector x, this function calculates the
-   *     euclidean norm of x.
-   *
-   *     the euclidean norm is computed by accumulating the sum of
-   *     squares in three different sums. the sums of squares for the
-   *     small and large components are scaled so that no overflows
-   *     occur. non-destructive underflows are permitted. underflows
-   *     and overflows do not occur in the computation of the unscaled
-   *     sum of squares for the intermediate components.
-   *     the definitions of small, intermediate and large components
-   *     depend on two constants, rdwarf and rgiant. the main
-   *     restrictions on these constants are that rdwarf**2 not
-   *     underflow and rgiant**2 not overflow. the constants
-   *     given here are suitable for every known computer.
-   *
-   *     the function statement is
-   *
-   *	double precision function enorm(n,x)
-   *
-   *     where
-   *
-   *	n is a positive integer input variable.
-   *
-   *	x is an input array of length n.
-   *
-   *     subprograms called
-   *
-   *	fortran-supplied ... dabs,dsqrt
-   *
-   *     argonne national laboratory. minpack project. march 1980.
-   *     burton s. garbow, kenneth e. hillstrom, jorge j. more
-   *
-   *     **********
-   */
+
 template <typename T>
 T mp_enorm(data_struct::ArrayTr<T> &out_resid) 
 {
@@ -409,44 +370,42 @@ T mp_enorm(data_struct::ArrayTr<T> &out_resid)
 
 template <typename T>
 FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
-	      int m, int n, int *ifree, int npar, double *x, data_struct::ArrayTr<T>& fvec,
-	      data_struct::ArrayTr<T>& fjac, double epsfcn,
-	      double *wa, void *priv, Result<T>& result,
-	      double *step, double *dstep, int *dside,
-	      int *qulimited, double *ulimit,
-	      int *ddebug, double *ddrtol, double *ddatol,
-	      double *wa2, double **dvec)
+	      data_struct::Fit_Parameters<T>& params, data_struct::ArrayTr<T>& out_resid,
+	      std::unordered_map<std::string, data_struct::ArrayTr<T> >& fjac,
+        T epsfcn, data_struct::ArrayTr<T> &wa, void *user_data, Result<T>& result,
+	      data_struct::ArrayTr<T> &wa2)
 {
-  int i,j;
-  double h;
+  T h = (T)0.0;
   int has_analytical_deriv = 0;
   int has_numerical_deriv = 0;
   int has_debug_deriv = 0;
   
-  T temp = std::max(epsfcn, MP_MachEp0());
+  T temp = std::max(epsfcn, MP_MachEp0<T>());
   T eps = sqrt(temp);
-  int ij = 0;
+  //size_t resid_size = out_resid.size();
 
-  for (j=0; j<npar; j++) dvec[j] = 0;
-
-  /* Initialize the Jacobian derivative matrix */
-  for (j=0; j<(n*m); j++) fjac[j] = 0;
+  //for (j=0; j<npar; j++) dvec[j] = 0;
 
   /* Check for which parameters need analytical derivatives and which
      need numerical ones */
-  for (j=0; j<n; j++) 
+  //for (j=0; j<result.nfree; j++) 
+  for(auto &pitr : params)
   {
+    if(pitr.second.bound_type == data_struct::Fit_Bound::FIXED)
+    {
+      continue;
+    }
     // Loop through free parameters only 
-    if (dside && dside[ifree[j]] == 3 && ddebug[ifree[j]] == 0) 
+    if (pitr.second.side == data_struct::Derivative::User && false == pitr.second.debug) 
     {
       /* Purely analytical derivatives */
-      dvec[ifree[j]] = fjac + j*m;
+      //dvec[ifree[j]] = fjac + j * resid_size;
       has_analytical_deriv = 1;
     }
-    else if (dside && ddebug[ifree[j]] == 1) 
+    else if (pitr.second.debug) 
     {
       /* Numerical and analytical derivatives as a debug cross-check */
-      dvec[ifree[j]] = fjac + j*m;
+      //dvec[ifree[j]] = fjac + j * resid_size;
       has_analytical_deriv = 1;
       has_numerical_deriv = 1;
       has_debug_deriv = 1;
@@ -460,8 +419,8 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
   // If there are any parameters requiring analytical derivatives, then compute them first. 
   if (has_analytical_deriv) 
   {
-    FUNC_RET ret = funct(&params, out_resid, user_data);
-    iflag = mp_call(funct, m, npar, x, wa, dvec, priv);
+    FUNC_RET ret = funct(&params, wa, user_data);
+    //iflag = mp_call(funct, resid_size, npar, x, wa, dvec, priv);
     result.nfev += 1;
     if (ret == FUNC_RET::USER_QUIT )
     {
@@ -478,35 +437,37 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
   // Any parameters requiring numerical derivatives 
   if (has_numerical_deriv) 
   {
-    for (j=0; j<n; j++) 
+    //for (j=0; j<result.nfree; j++) 
+    for(auto &pitr : params)
     {
+      if(pitr.second.bound_type == data_struct::Fit_Bound::FIXED)
+      {
+        continue;
+      }
       // Loop thru free parms 
-      int dsidei = (dside)?(dside[ifree[j]]):(0);
-      int debug  = ddebug[ifree[j]];
-      double dr = ddrtol[ifree[j]], da = ddatol[ifree[j]];
       
       // Check for debugging 
-      if (debug) 
+      /* TODO: fix print
+      if (pitr.second.debug) 
       {
-        printf("FJAC PARM %d\n", ifree[j]);
+        printf("FJAC PARM %s\n", pitr.first);
       }
-
+      */
       // Skip parameters already done by user-computed partials 
-      if (dside && dsidei == 3) 
+      if (pitr.second.side == data_struct::Derivative::User) 
       {
-        ij += m; // still need to advance fjac pointer 
         continue;
       }
 
-      temp = x[ifree[j]];
+      temp = pitr.second.value;
       h = eps * fabs(temp);
-      if (step  &&  step[ifree[j]] > 0)
+      if (pitr.second.step_size > 0)
       {
-        h = step[ifree[j]];
+        h = pitr.second.step_size;
       } 
-      if (dstep && dstep[ifree[j]] > 0)
+      if (pitr.second.relstep > 0) 
       {
-        h = fabs(dstep[ifree[j]]*temp);
+        h = fabs(pitr.second.relstep * temp);
       }
       if (h == (T)0.0)
       {
@@ -514,44 +475,45 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
       }
 
       // If negative step requested, or we are against the upper limit 
-      if ((dside && dsidei == -1) ||  (dside && dsidei == 0 && qulimited && ulimit && qulimited[j] && (temp > (ulimit[j]-h)))) 
+      if ((pitr.second.side == data_struct::Derivative::NegOneSide) 
+      ||  (pitr.second.side == data_struct::Derivative::AutoOneSide && (pitr.second.bound_type == data_struct::Fit_Bound::LIMITED_HI || pitr.second.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI) && (temp > (pitr.second.max_val - h)))) 
       {
         h = -h;
       }
 
-      x[ifree[j]] = temp + h;
-      FUNC_RET ret = funct(&params, out_resid, user_data);
-      iflag = mp_call(funct, m, npar, x, wa, 0, priv);
+      pitr.second.value = temp + h;
+      FUNC_RET ret = funct(&params, wa, user_data);
+      //iflag = mp_call(funct, resid_size, npar, x, wa, 0, priv);
       result.nfev += 1;
       if (ret == FUNC_RET::USER_QUIT )
       {
         return ret;
       }
-      x[ifree[j]] = temp;
+      pitr.second.value = temp;
 
-      if (dsidei <= 1) 
+      if (pitr.second.side <= data_struct::Derivative::OneSide) 
       {
         // COMPUTE THE ONE-SIDED DERIVATIVE 
-        if (! debug) 
+        if (false == pitr.second.debug) 
         {
           // Non-debug path for speed 
-          for (i=0; i<m; i++, ij++) 
-          {
-            fjac[ij] = (wa[i] - fvec[i])/h; // fjac[i+m*j] 
-          }
+          fjac[pitr.first] = (wa - out_resid)/h; 
         }
         else
         {
           // Debug path for correctness 
-          for (i=0; i<m; i++, ij++) 
+          fjac[pitr.first] = (wa - out_resid)/h; 
+          /* TODO: fix debug print
+          for (i=0; i<resid_size; i++, ij++) 
           {
-            double fjold = fjac[ij];
-            fjac[ij] = (wa[i] - fvec[i])/h; // fjac[i+m*j] 
-            if ((da == 0 && dr == 0 && (fjold != 0 || fjac[ij] != 0)) || ((da != 0 || dr != 0) && (fabs(fjold-fjac[ij]) > da + fabs(fjold)*dr))) 
+            T fjold = fjac[ij];
+            
+            if ((pitr.second.deriv_abstol == 0 && pitr.second.deriv_reltol == 0 && (fjold != 0 || fjac[ij] != 0)) || ((pitr.second.deriv_abstol != 0 || pitr.second.deriv_reltol != 0) && (fabs(fjold-fjac[ij]) > pitr.second.deriv_abstol + fabs(fjold)*pitr.second.deriv_reltol))) 
             {
-              printf("   %10d %10.4g %10.4g %10.4g %10.4g %10.4g\n",  i, fvec[i], fjold, fjac[ij], fjold-fjac[ij], (fjold == 0)?(0):((fjold-fjac[ij])/fjold));
+              printf("   %10d %10.4g %10.4g %10.4g %10.4g %10.4g\n",  i, out_resid[i], fjold, fjac[ij], fjold-fjac[ij], (fjold == 0)?(0):((fjold-fjac[ij])/fjold));
             }
           }
+          */
         } // end debugging
 
       } 
@@ -559,44 +521,40 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
       {
         // dside > 2 
         // COMPUTE THE TWO-SIDED DERIVATIVE 
-        for (i=0; i<m; i++) 
-        {
-          wa2[i] = wa[i];
-        }
+        wa2 = wa;
 
         // Evaluate at x - h 
-        x[ifree[j]] = temp - h;
-        FUNC_RET ret = funct(&params, out_resid, user_data);
-        iflag = mp_call(funct, m, npar, x, wa, 0, priv);
+        pitr.second.value = temp - h;
+        FUNC_RET ret = funct(&params, wa, user_data);
+        //iflag = mp_call(funct, resid_size, npar, x, wa, 0, priv);
         result.nfev += 1;
         if (ret == FUNC_RET::USER_QUIT)
         {
           return ret;
         }
-        x[ifree[j]] = temp;
+        pitr.second.value = temp;
 
         // Now compute derivative as (f(x+h) - f(x-h))/(2h) 
-        if (! debug ) 
+        if (false == pitr.second.debug ) 
         {
           // Non-debug path for speed 
-          for (i=0; i<m; i++, ij++) 
-          {
-            fjac[ij] = (wa2[ij] - wa[i])/(2*h); // fjac[i+m*j]
-          }
-              
+          fjac[pitr.first] = (wa2 - wa)/(2*h);    
         }
         else
         {
+          fjac[pitr.first] = (wa2 - wa)/(2*h);
+          /* TODO: fix debug print
           // Debug path for correctness 
-          for (i=0; i<m; i++, ij++) 
+          for (i=0; i<resid_size; i++, ij++) 
           {
-            double fjold = fjac[ij];
-            fjac[ij] = (wa2[i] - wa[i])/(2*h); // fjac[i+m*j] 
-            if ((da == 0 && dr == 0 && (fjold != 0 || fjac[ij] != 0)) || ((da != 0 || dr != 0) && (fabs(fjold-fjac[ij]) > da + fabs(fjold)*dr))) 
+            T fjold = fjac[ij];
+            
+            if ((pitr.second.deriv_abstol == 0 && pitr.second.deriv_reltol == 0 && (fjold != 0 || fjac[ij] != 0)) || ((pitr.second.deriv_abstol != 0 || pitr.second.deriv_reltol != 0) && (fabs(fjold-fjac[ij]) > pitr.second.deriv_abstol + fabs(fjold) * pitr.second.deriv_reltol))) 
             {
-              printf("   %10d %10.4g %10.4g %10.4g %10.4g %10.4g\n", i, fvec[i], fjold, fjac[ij], fjold-fjac[ij], (fjold == 0)?(0):((fjold-fjac[ij])/fjold));
+              printf("   %10d %10.4g %10.4g %10.4g %10.4g %10.4g\n", i, out_resid[i], fjold, fjac[ij], fjold-fjac[ij], (fjold == 0)?(0):((fjold-fjac[ij])/fjold));
             }
           }
+          */
         } // end debugging 
         
       } // if (dside > 2) 
@@ -613,7 +571,7 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
 //-----------------------------------------------------------------------------------------------------------
 
 template <typename T>
-Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, const data_struct::Fit_Parameters<T>& params, Options<T>* my_options, void *user_data)
+Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Parameters<T>& params, Options<T>* my_options, void *user_data)
 {
   if(funct == nullptr)
   {
@@ -661,6 +619,8 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, const data_struct::Fi
             return Result<T> (Errors::BOUNDS);
           }
         break;
+        default:
+        break;
       }
       num_free_params ++;
     }
@@ -676,6 +636,7 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, const data_struct::Fi
 
   // initialze result
   Result<T> result(params.size());
+  result.nfree = num_free_params;
   data_struct::ArrayTr<T> out_resid;
   out_resid.resize(resid_size);
   out_resid.setZero(resid_size);
@@ -686,29 +647,26 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, const data_struct::Fi
       options = *my_options;
   }
 
-  int nfree = 0;
-  int npegged = 0;
   T fnorm = (T)-1.0;
   T fnorm1 = (T)-1.0;
   T xnorm = (T)-1.0;
   T delta = (T)0.0;
 
-  data_struct::ArrayTr<T> fjac(resid_size * num_free_params);
-  /*
-  mp_malloc(fvec, double, m);
-  mp_malloc(qtf, double, nfree);
-  mp_malloc(x, double, nfree);
-  mp_malloc(xnew, double, npar);
-  mp_malloc(fjac, double, m*nfree);
-  mp_malloc(diag, double, npar);
-  mp_malloc(wa1, double, npar);
-  mp_malloc(wa2, double, m); // Maximum usage is "m" in mpfit_fdjac2() 
-  mp_malloc(wa3, double, npar);
-  mp_malloc(wa4, double, m);
-  mp_malloc(ipvt, int, npar);
-  mp_malloc(DArrptr, double *, npar);
-  */
+  // Initialize the Jacobian derivative matrix 
+  // param_name, jac array
+  std::unordered_map<std::string, data_struct::ArrayTr<T> > fjac;
+  for(const auto& itr : params)
+  {
+    if(itr.second.bound_type != data_struct::Fit_Bound::FIXED)
+    {
+      fjac[itr.first].resize(resid_size);
+      fjac[itr.first].setZero(resid_size);
+    }
+  }
 
+  data_struct::ArrayTr<T> wa2(resid_size);
+  data_struct::ArrayTr<T> wa4(resid_size);
+  
   FUNC_RET ret = funct(&params, out_resid, user_data);
   result.nfev += 1;
   if(ret == FUNC_RET::USER_QUIT)
@@ -717,7 +675,7 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, const data_struct::Fi
   }
 
 
-  fnorm = mp_enorm(out_resid);
+  fnorm = mp_enorm<T>(out_resid);
   result.orignorm = fnorm*fnorm;
 /*
   // Make a new copy 
@@ -725,13 +683,7 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, const data_struct::Fi
     xnew[i] = xall[i];
   }
 
-  // Transfer free parameters to 'x' 
-  for (i=0; i<nfree; i++) {
-    x[i] = xall[ifree[i]];
-  }
-
   // Initialize Levelberg-Marquardt parameter and iteration counter 
-
   par = 0.0;
   iter = 1;
   for (i=0; i<nfree; i++) {
@@ -740,24 +692,9 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, const data_struct::Fi
 
   // Beginning of the outer loop 
  OUTER_LOOP:
-  for (i=0; i<nfree; i++) {
-    xnew[ifree[i]] = x[i];
-  }
-
-   iflag = mp_fdjac2(funct, m, nfree, ifree, npar, xnew, fvec, fjac, ldfjac,
-		    conf.epsfcn, wa4, private_data, &nfev,
-		    step, dstep, mpside, qulim, ulim,
-		    ddebug, ddrtol, ddatol, wa2, dvecptr);
-  if (iflag < 0) {
-    goto CLEANUP;
-  }
-  // dvecptr is double ** 
-  // dvecptr[npars] [?]
+  
 */
-  ret = mp_fdjac2(funct, m, nfree, ifree, npar, xnew, out_resid, fjac,
-		    conf.epsfcn, wa4, private_data, &result,
-		    step, dstep, mpside, qulim, ulim,
-		    ddebug, ddrtol, ddatol, wa2, dvecptr);
+  ret = mp_fdjac2(funct, params, out_resid, fjac, options.epsfcn, wa4, user_data, result, wa2);
   if(ret == FUNC_RET::USER_QUIT)
   {
     result.status = Errors::USER_QUIT;  

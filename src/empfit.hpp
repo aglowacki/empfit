@@ -48,6 +48,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 
 #include <Eigen/Core>
+#include <Eigen/Dense>
 #include <unordered_map>
 #include "fit_param.hpp"
 
@@ -120,6 +121,10 @@ constexpr T MP_RGiant()
 enum class Errors { INPUT=0, NotANum=-16, FUNC=-17, NPOINTS=-18, NFREE=-19, MEMORY=-20, INITBOUNDS=-21, BOUNDS=-22, PARAM=-23, DOF=-24, USER_QUIT=-25, OK_CHI=1, OK_PAR=2, OK_BOTH=3, OK_DIR=4, MAXITER=5, FTOL=6, XTOL=7, GTOL=8};
 
 enum class FUNC_RET {OK=0, USER_QUIT=1};
+
+//-----------------------------------------------------------------------------------------------------------
+
+
 
 //-----------------------------------------------------------------------------------------------------------
 
@@ -389,20 +394,17 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
   /* Check for which parameters need analytical derivatives and which
      need numerical ones */
   //for (j=0; j<result.nfree; j++) 
-  for(auto &pitr : params)
+  for(auto &itr : fjac)
   {
-    if(pitr.second.bound_type == data_struct::Fit_Bound::FIXED)
-    {
-      continue;
-    }
+    data_struct::Fit_Param<T>& param = params.at(itr.first);
     // Loop through free parameters only 
-    if (pitr.second.side == data_struct::Derivative::User && false == pitr.second.debug) 
+    if (param.side == data_struct::Derivative::User && false == param.debug) 
     {
       /* Purely analytical derivatives */
       //dvec[ifree[j]] = fjac + j * resid_size;
       has_analytical_deriv = 1;
     }
-    else if (pitr.second.debug) 
+    else if (param.debug) 
     {
       /* Numerical and analytical derivatives as a debug cross-check */
       //dvec[ifree[j]] = fjac + j * resid_size;
@@ -438,36 +440,33 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
   if (has_numerical_deriv) 
   {
     //for (j=0; j<result.nfree; j++) 
-    for(auto &pitr : params)
+    for(auto &itr : fjac)
     {
-      if(pitr.second.bound_type == data_struct::Fit_Bound::FIXED)
-      {
-        continue;
-      }
+      data_struct::Fit_Param<T>& param = params.at(itr.first);
       // Loop thru free parms 
       
       // Check for debugging 
       /* TODO: fix print
-      if (pitr.second.debug) 
+      if (param.debug) 
       {
         printf("FJAC PARM %s\n", pitr.first);
       }
       */
       // Skip parameters already done by user-computed partials 
-      if (pitr.second.side == data_struct::Derivative::User) 
+      if (param.side == data_struct::Derivative::User) 
       {
         continue;
       }
 
-      temp = pitr.second.value;
+      temp = param.value;
       h = eps * fabs(temp);
-      if (pitr.second.step_size > 0)
+      if (param.step_size > 0)
       {
-        h = pitr.second.step_size;
+        h = param.step_size;
       } 
-      if (pitr.second.relstep > 0) 
+      if (param.relstep > 0) 
       {
-        h = fabs(pitr.second.relstep * temp);
+        h = fabs(param.relstep * temp);
       }
       if (h == (T)0.0)
       {
@@ -475,13 +474,13 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
       }
 
       // If negative step requested, or we are against the upper limit 
-      if ((pitr.second.side == data_struct::Derivative::NegOneSide) 
-      ||  (pitr.second.side == data_struct::Derivative::AutoOneSide && (pitr.second.bound_type == data_struct::Fit_Bound::LIMITED_HI || pitr.second.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI) && (temp > (pitr.second.max_val - h)))) 
+      if ((param.side == data_struct::Derivative::NegOneSide) 
+      ||  (param.side == data_struct::Derivative::AutoOneSide && (param.bound_type == data_struct::Fit_Bound::LIMITED_HI || param.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI) && (temp > (param.max_val - h)))) 
       {
         h = -h;
       }
 
-      pitr.second.value = temp + h;
+      param.value = temp + h;
       FUNC_RET ret = funct(&params, wa, user_data);
       //iflag = mp_call(funct, resid_size, npar, x, wa, 0, priv);
       result.nfev += 1;
@@ -489,26 +488,26 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
       {
         return ret;
       }
-      pitr.second.value = temp;
+      param.value = temp;
 
-      if (pitr.second.side <= data_struct::Derivative::OneSide) 
+      if (param.side <= data_struct::Derivative::OneSide) 
       {
         // COMPUTE THE ONE-SIDED DERIVATIVE 
-        if (false == pitr.second.debug) 
+        if (false == param.debug) 
         {
           // Non-debug path for speed 
-          fjac[pitr.first] = (wa - out_resid)/h; 
+          itr.second = (wa - out_resid)/h; 
         }
         else
         {
           // Debug path for correctness 
-          fjac[pitr.first] = (wa - out_resid)/h; 
+          itr.second = (wa - out_resid)/h; 
           /* TODO: fix debug print
           for (i=0; i<resid_size; i++, ij++) 
           {
             T fjold = fjac[ij];
             
-            if ((pitr.second.deriv_abstol == 0 && pitr.second.deriv_reltol == 0 && (fjold != 0 || fjac[ij] != 0)) || ((pitr.second.deriv_abstol != 0 || pitr.second.deriv_reltol != 0) && (fabs(fjold-fjac[ij]) > pitr.second.deriv_abstol + fabs(fjold)*pitr.second.deriv_reltol))) 
+            if ((param.deriv_abstol == 0 && param.deriv_reltol == 0 && (fjold != 0 || fjac[ij] != 0)) || ((param.deriv_abstol != 0 || param.deriv_reltol != 0) && (fabs(fjold-fjac[ij]) > param.deriv_abstol + fabs(fjold) * param.deriv_reltol))) 
             {
               printf("   %10d %10.4g %10.4g %10.4g %10.4g %10.4g\n",  i, out_resid[i], fjold, fjac[ij], fjold-fjac[ij], (fjold == 0)?(0):((fjold-fjac[ij])/fjold));
             }
@@ -524,7 +523,7 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
         wa2 = wa;
 
         // Evaluate at x - h 
-        pitr.second.value = temp - h;
+        param.value = temp - h;
         FUNC_RET ret = funct(&params, wa, user_data);
         //iflag = mp_call(funct, resid_size, npar, x, wa, 0, priv);
         result.nfev += 1;
@@ -532,24 +531,24 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
         {
           return ret;
         }
-        pitr.second.value = temp;
+        param.value = temp;
 
         // Now compute derivative as (f(x+h) - f(x-h))/(2h) 
-        if (false == pitr.second.debug ) 
+        if (false == param.debug ) 
         {
           // Non-debug path for speed 
-          fjac[pitr.first] = (wa2 - wa)/(2*h);    
+          itr.second = (wa2 - wa)/(2*h);    
         }
         else
         {
-          fjac[pitr.first] = (wa2 - wa)/(2*h);
+          itr.second = (wa2 - wa)/(2*h);
           /* TODO: fix debug print
           // Debug path for correctness 
           for (i=0; i<resid_size; i++, ij++) 
           {
             T fjold = fjac[ij];
             
-            if ((pitr.second.deriv_abstol == 0 && pitr.second.deriv_reltol == 0 && (fjold != 0 || fjac[ij] != 0)) || ((pitr.second.deriv_abstol != 0 || pitr.second.deriv_reltol != 0) && (fabs(fjold-fjac[ij]) > pitr.second.deriv_abstol + fabs(fjold) * pitr.second.deriv_reltol))) 
+            if ((param.deriv_abstol == 0 && param.deriv_reltol == 0 && (fjold != 0 || fjac[ij] != 0)) || ((param.deriv_abstol != 0 || param.deriv_reltol != 0) && (fabs(fjold-fjac[ij]) > param.deriv_abstol + fabs(fjold) * param.deriv_reltol))) 
             {
               printf("   %10d %10.4g %10.4g %10.4g %10.4g %10.4g\n", i, out_resid[i], fjold, fjac[ij], fjold-fjac[ij], (fjold == 0)?(0):((fjold-fjac[ij])/fjold));
             }
@@ -566,6 +565,130 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
   }
 
   return FUNC_RET::OK; 
+}
+
+//-----------------------------------------------------------------------------------------------------------
+
+void mp_qrfac(int m, int n, double *a,  
+	      int pivot, int *ipvt, 
+	      double *rdiag, double *acnorm, double *wa)
+{
+  int i,ij,jj,j,jp1,k,kmax,minmn;
+  double ajnorm,sum,temp;
+
+  // compute the initial column norms and initialize several arrays.
+  ij = 0;
+  for (j=0; j<n; j++) 
+  {
+    ////acnorm[j] = mp_enorm(m, &a[ij]);
+    rdiag[j] = acnorm[j];
+    wa[j] = rdiag[j];
+    if (pivot != 0)
+    {
+      ipvt[j] = j;
+    }
+    ij += m; // m * j 
+  }
+  // reduce a to r with householder transformations.
+  ////minmn = mp_min0(m,n);
+  for (j=0; j<minmn; j++) 
+  {
+    if (pivot == 0)
+    {
+      goto L40;
+    }
+    // bring the column of largest norm into the pivot position.
+    kmax = j;
+    for (k=j; k<n; k++)
+    {
+	    if (rdiag[k] > rdiag[kmax])
+      {
+	      kmax = k;
+      }
+    }
+    if (kmax == j)
+    {
+      goto L40;
+    }
+      
+    ij = m * j;
+    jj = m * kmax;
+    for (i=0; i<m; i++)
+    {
+      temp = a[ij]; // [i + m * j] 
+      a[ij] = a[jj]; // [i + m * kmax] 
+      a[jj] = temp;
+      ij += 1;
+      jj += 1;
+    }
+    rdiag[kmax] = rdiag[j];
+    wa[kmax] = wa[j];
+    k = ipvt[j];
+    ipvt[j] = ipvt[kmax];
+    ipvt[kmax] = k;
+      
+L40:
+    // compute the householder transformation to reduce the j-th column of a to a multiple of the j-th unit vector.
+    jj = j + m*j;
+    ///ajnorm = mp_enorm<double>(m - j, &a[jj]);
+    if (ajnorm == 0.0)
+    {
+      goto L100;
+    }
+    if (a[jj] < 0.0)
+    {
+      ajnorm = -ajnorm;
+    }
+    ij = jj;
+    for (i=j; i<m; i++)
+    {
+    	a[ij] /= ajnorm;
+	    ij += 1; // [i + m * j] 
+    }
+    a[jj] += 1.0;
+    // apply the transformation to the remaining columns and update the norms.
+    jp1 = j + 1;
+    if (jp1 < n)
+    {
+      for (k=jp1; k<n; k++)
+      {
+        sum = 0.0;
+        ij = j + m*k;
+        jj = j + m*j;
+        for (i=j; i<m; i++)
+        {
+          sum += a[jj]*a[ij];
+          ij += 1; // [i+m*k] 
+          jj += 1; // [i+m*j] 
+        }
+        temp = sum/a[j+m*j];
+        ij = j + m*k;
+        jj = j + m*j;
+        for (i=j; i<m; i++)
+        {
+          a[ij] -= temp*a[jj];
+          ij += 1; // [i+m*k] 
+          jj += 1; // [i+m*j] 
+        }
+        if ((pivot != 0) && (rdiag[k] != 0.0))
+        {
+          temp = a[j+m*k]/rdiag[k];
+          ////temp = mp_dmax1( 0.0, 1.0 - temp * temp );
+          rdiag[k] *= sqrt(temp);
+          temp = rdiag[k] / wa[k];
+          ////if (((T)0.05 * temp * temp) <= MP_MachEp0<T>())
+          {
+            ////rdiag[k] = mp_enorm(m-j-1,&a[jp1+m*k]);
+            wa[k] = rdiag[k];
+		      }
+	      }
+  	  }
+    }
+      
+L100:
+    rdiag[j] = -ajnorm;
+  }
+
 }
 
 //-----------------------------------------------------------------------------------------------------------
@@ -652,6 +775,8 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
   T xnorm = (T)-1.0;
   T delta = (T)0.0;
 
+  data_struct::ArrayTr<T> diag(num_free_params);
+
   // Initialize the Jacobian derivative matrix 
   // param_name, jac array
   std::unordered_map<std::string, data_struct::ArrayTr<T> > fjac;
@@ -663,7 +788,9 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
       fjac[itr.first].setZero(resid_size);
     }
   }
+  data_struct::MatrixTr<T> A = data_struct::MatrixTr<T>::Zero(resid_size, params.size()); // Used for QR decomp of fjac
 
+  // alloc work array so we don't need to keep allocating in the functions
   data_struct::ArrayTr<T> wa2(resid_size);
   data_struct::ArrayTr<T> wa4(resid_size);
   
@@ -685,8 +812,11 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
 
   // Initialize Levelberg-Marquardt parameter and iteration counter 
   par = 0.0;
-  iter = 1;
-  for (i=0; i<nfree; i++) {
+  */
+  size_t iter = 1;
+ /*
+  for (i=0; i<nfree; i++) 
+  {
     qtf[i] = 0;
   }
 
@@ -698,8 +828,148 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
   if(ret == FUNC_RET::USER_QUIT)
   {
     result.status = Errors::USER_QUIT;  
+    return result;
   }
 
+
+  // Determine if any of the parameters are pegged at the limits 
+  for(auto &pitr : params)
+  {
+    if(pitr.second.bound_type == data_struct::Fit_Bound::FIXED || pitr.second.bound_type == data_struct::Fit_Bound::FIT)
+    {
+      continue;
+    }
+    
+    bool lpegged = false;
+    bool upegged = false;
+    if(pitr.second.bound_type == data_struct::Fit_Bound::LIMITED_LO || pitr.second.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI)
+    {
+      // yes check if the params is equal, later we check if <=
+      lpegged = (pitr.second.value == pitr.second.min_val);
+    }
+    if(pitr.second.bound_type == data_struct::Fit_Bound::LIMITED_HI || pitr.second.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI)
+    {
+      // yes check if the params is equal, later we check if >=
+      lpegged = (pitr.second.value == pitr.second.max_val);
+    }
+    
+    T sum = 0;
+
+    // If the parameter is pegged at a limit, compute the gradient direction 
+    if (lpegged || upegged) 
+    {
+      data_struct::ArrayTr<T> prod = out_resid * fjac[pitr.first];
+      sum = prod.sum();
+    }
+    // If pegged at lower limit and gradient is toward negative then reset gradient to zero 
+    if (lpegged && (sum > 0)) 
+    {
+      fjac[pitr.first].setZero(resid_size);
+    }
+    // If pegged at upper limit and gradient is toward positive then reset gradient to zero 
+    if (upegged && (sum < 0)) 
+    {
+      fjac[pitr.first].setZero(resid_size);
+    }
+  } 
+
+  // Compute the QR factorization of the jacobian 
+  // 1 = pivot , ipvt is identity matrix, Fjac is M x N (nfree) . wa1 (maybe Q), wa2 (diag),  wa3 (temp storage)
+  ////mp_qrfac(m, nfree, fjac, 1, ipvt,  wa1, wa2, wa3);
+  // use eigen QR decomp ColPivHouseholderQR or FullPivHouseholderQR
+  // Fill A with fjac
+  int r=0;
+  for(auto& itr : fjac)
+  {
+    for(int c = 0; c < resid_size; c++)
+    {
+      A(r,c) = itr.second(c);
+    }
+    r++;
+  }
+  Eigen::FullPivHouseholderQR<data_struct::MatrixTr<T>> qr(A);
+/*
+
+    data_struct::MatrixTr<T> A = MatrixXd::Random(rows, cols); // Generate a random rectangular matrix
+    data_struct::VectorTr<T> b = VectorXd::Random(rows); // Generate a random vector for the linear system
+
+    // Perform FullPivHouseholderQR decomposition with pivoting
+    FullPivHouseholderQR<MatrixXd> qr(A);
+
+    // Solve a linear system of equations using the QR decomposition
+    VectorXd x = qr.solve(b);
+
+    // Output the original matrix, solution vector, and reconstructed matrix
+    std::cout << "Original Rectangular Matrix A:\n" << A << "\n\n";
+    std::cout << "Right-hand side vector b:\n" << b << "\n\n";
+    std::cout << "Solution vector x:\n" << x << "\n\n";
+    std::cout << "Reconstructed Matrix from QR Decomposition with Pivoting:\n" << qr.householderQ() * qr.matrixQR() << "\n";
+*/
+
+// on the first iteration and if mode is 1, scale according to the norms of the columns of the initial jacobian.
+/*
+  if (iter == 1) 
+  {
+    if (options.douserscale == 0) 
+    {
+      for (j=0; j<nfree; j++) 
+      {
+	      diag[ifree[j]] = wa2[j];
+	      if (wa2[j] == (T)0.0 ) 
+        {
+	        diag[ifree[j]] = (T)1.0;
+	      }
+      }
+    }
+
+    // on the first iteration, calculate the norm of the scaled x and initialize the step bound delta.
+    for (j=0; j<nfree; j++ ) 
+    {
+      wa3[j] = diag[ifree[j]] * x[j];
+    }
+    
+    xnorm = mp_enorm(nfree, wa3);
+    delta = options.stepfactor*xnorm;
+    if (delta == (T)0.0))
+    {
+       delta = options.stepfactor;
+    }
+  }
+
+  // form (q transpose)*fvec and store the first n components in qtf.
+  for (i=0; i<m; i++ ) 
+  {
+    wa4[i] = fvec[i];
+  }
+
+  jj = 0;
+  for (j=0; j<nfree; j++ ) 
+  {
+    temp3 = fjac[jj];
+    if (temp3 != (T)0.0) 
+    {
+      sum = zero;
+      ij = jj;
+      for (i=j; i<m; i++ ) 
+      {
+        sum += fjac[ij] * wa4[i];
+        ij += 1;	// fjac[i+m*j]
+      }
+      temp = -sum / temp3;
+      ij = jj;
+      for (i=j; i<m; i++ ) 
+      {
+        wa4[i] += fjac[ij] * temp;
+        ij += 1;	// fjac[i+m*j] 
+      }
+    }
+    fjac[jj] = wa1[j];
+    jj += m+1;	// fjac[j+m*j] 
+    qtf[j] = wa4[j];
+  }
+
+
+*/
 
 
   return result;

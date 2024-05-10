@@ -95,11 +95,14 @@ enum class Derivative {AutoOneSide=0, OneSide=1, NegOneSide=-1, TwoSide=2, User=
 	// 3 - user-computed analytical derivatives}
 //-----------------------------------------------------------------------------
 
-//template<typename T>
-//using VectorTr = Eigen::Vector<T, Eigen::Dynamic>;
+template<typename T>
+using VectorTr = Eigen::Vector<T, Eigen::Dynamic>;
 
 template<typename _T>
 using ArrayTr = Eigen::Array<_T, Eigen::Dynamic, Eigen::RowMajor>;
+
+template<typename _T>
+using MatrixTr = Eigen::Matrix<_T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 
 //-----------------------------------------------------------------------------
 

@@ -224,7 +224,7 @@ struct Options
   T epsfcn;  // Finite derivative step size               Default: MP_MACHEP0 
   T stepfactor; // Initial step bound                     Default: 100.0 
   T covtol;  // Range tolerance for covariance calculation Default: 1e-14 
-  int maxiter;    /* Maximum number of iterations.  If maxiter == MP_NO_ITER,
+  size_t maxiter;    /* Maximum number of iterations.  If maxiter == MP_NO_ITER,
                      then basic error checking is done, and parameter
                      errors/covariances are estimated based on input
                      parameter values, but no fitting iterations are done. 
@@ -475,7 +475,9 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
 
       // If negative step requested, or we are against the upper limit 
       if ((param.side == data_struct::Derivative::NegOneSide) 
-      ||  (param.side == data_struct::Derivative::AutoOneSide && (param.bound_type == data_struct::Fit_Bound::LIMITED_HI || param.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI) && (temp > (param.max_val - h)))) 
+      ||  (param.side == data_struct::Derivative::AutoOneSide 
+      && (param.bound_type == data_struct::Fit_Bound::LIMITED_HI || param.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI)
+      && (temp > (param.max_val - h)))) 
       {
         h = -h;
       }
@@ -570,14 +572,15 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
 //-----------------------------------------------------------------------------------------------------------
 
 template <typename T>
-void mp_qrfac(std::unordered_map<std::string, data_struct::ArrayTr<T> >& a, int pivot, data_struct::ArrayTr<int>& ipvt, data_struct::ArrayTr<T>&  rdiag, data_struct::ArrayTr<T>& acnorm, data_struct::ArrayTr<T>&  wa)
+void mp_qrfac(std::unordered_map<std::string, data_struct::ArrayTr<T> >& fjac, int pivot, data_struct::ArrayTr<int>& ipvt, data_struct::ArrayTr<T>&  rdiag,
+             data_struct::ArrayTr<T>& acnorm, data_struct::ArrayTr<T>&  wa)
 {
   T ajnorm,sum,temp;
 
   // compute the initial column norms and initialize several arrays.
   int j = 0;
   int m = 0;
-  for(auto& itr: a)
+  for(auto& itr: fjac)
   {
     m = itr.second.size();
     acnorm[j] = mp_enorm<T>(itr.second);
@@ -591,10 +594,9 @@ void mp_qrfac(std::unordered_map<std::string, data_struct::ArrayTr<T> >& a, int 
   }
   
   // reduce a to r with householder transformations.
-  int n = a.size();
-  int minmn = std::min(m,n);
+  int n = fjac.size();
   j = 0;
-  for(auto& itr: a) 
+  for(auto& itr: fjac) 
   {
     if (pivot == 1)
     {
@@ -689,8 +691,404 @@ void mp_qrfac(std::unordered_map<std::string, data_struct::ArrayTr<T> >& a, int 
 //-----------------------------------------------------------------------------------------------------------
 
 template <typename T>
+void mp_qrsolv(std::unordered_map<std::string, data_struct::ArrayTr<T> >& fjac, data_struct::ArrayTr<int>& ipvt, data_struct::ArrayTr<T>& diag,
+	       data_struct::ArrayTr<T>& qtb, data_struct::ArrayTr<T>& x, data_struct::ArrayTr<T>& sdiag, data_struct::ArrayTr<T>& wa)
+{
+
+  int n = fjac.size();
+  int i,ij,ik,jp1,k,kp1,l,nsing;
+  double cosx,cotan,qtbpj,sinx,sum,tanx,temp;
+  
+   //     copy r and (q transpose)*b to preserve input and initialize s.
+   //     in particular, save the diagonal elements of r in x.
+   
+  int kk = 0;
+  int j=0;
+  /*
+  for (int j=0; j<n; j++) 
+  {
+    ij = kk;
+    ik = kk;
+    for (int i=j; i<n; i++)
+    {
+      fjac[ij] = fjac[ik];
+      ij += 1;   // [i+ldr*j] 
+      ik += ldr; // [j+ldr*i]
+    }
+    x[j] = fjac[kk];
+    wa[j] = qtb[j];
+    kk += ldr+1; // j+ldr*j 
+  }
+  
+   //     eliminate the diagonal matrix d using a givens rotation.
+  for (j=0; j<n; j++) 
+  {
+    //	 prepare the row of d to be eliminated, locating the
+    //	 diagonal element using p from the qr factorization.
+    l = ipvt[j];
+    if (diag[l] == (T)0.0)
+    {
+      goto L90;
+    }
+    for (k=j; k<n; k++)
+    {
+      sdiag[k] = (T)0.0;
+    }
+    sdiag[j] = diag[l];
+    
+    //	 the transformations to eliminate the row of d
+    //	 modify only a single element of (q transpose)*b
+    //	 beyond the first n, which is initially zero.
+     
+    qtbpj = (T)0.0;
+    for (k=j; k<n; k++)
+    {
+    
+      //	    determine a givens rotation which eliminates the
+      //	    appropriate element in the current row of d.
+      
+      if (sdiag[k] == (T)0.0)
+      {
+        continue;
+      }
+      kk = k;
+      if (fabs(fjac[kk]) < fabs(sdiag[k]))
+      {
+        cotan = fjac[kk] / sdiag[k];
+        sinx = (T)0.5 / sqrt((T)0.25 + (T)0.25 * cotan * cotan);
+        cosx = sinx * cotan;
+      }
+      else
+      {
+        tanx = sdiag[k]/fjac[kk];
+        cosx = (T)0.5 / sqrt((T)0.25 + (T)0.25 * tanx * tanx);
+        sinx = cosx*tanx;
+      }
+      
+      //	    compute the modified diagonal element of r and
+      //	    the modified element of ((q transpose)*b,0).
+      
+      fjac[kk] = cosx*fjac[kk] + sinx * sdiag[k];
+      temp = cosx*wa[k] + sinx*qtbpj;
+      qtbpj = -sinx*wa[k] + cosx*qtbpj;
+      wa[k] = temp;
+      
+      //	    accumulate the tranformation in the row of s.
+      kp1 = k + 1;
+      if (n > kp1)
+      {
+        ik = kk + 1;
+        for (i=kp1; i<n; i++)
+        {
+          temp = cosx*fjac[ik] + sinx*sdiag[i];
+          sdiag[i] = -sinx*fjac[ik] + cosx*sdiag[i];
+          fjac[ik] = temp;
+          ik += 1; // [i+ldr*k] 
+        }
+      }
+    }
+    L90:
+    
+    //	 store the diagonal element of s and restore
+    //	 the corresponding diagonal element of r.
+     
+    kk = j;
+    sdiag[j] = fjac[kk];
+    fjac[kk] = x[j];
+  }
+  */
+  //     solve the triangular system for z. if the system is
+  //     singular, then obtain a least squares solution.
+   
+  nsing = n;
+  for (j=0; j<n; j++) 
+  {
+    if ((sdiag[j] == (T)0.0) && (nsing == n))
+    {
+      nsing = j;
+    }
+    if (nsing < n)
+    {
+      wa[j] = (T)0.0;
+    }
+  }
+  if (nsing < 1)
+  {
+    goto L150;
+  }
+  /*
+  for (k=0; k<nsing; k++) 
+  {
+    j = nsing - k - 1;
+    sum = (T)0.0;
+    jp1 = j + 1;
+    if (nsing > jp1)
+    {
+      ij = jp1;
+      for (i=jp1; i<nsing; i++)
+      {
+        sum += fjac[ij]*wa[i];
+        ij += 1; // [i+ldr*j] 
+      }
+    }
+    wa[j] = (wa[j] - sum)/sdiag[j];
+  }
+  */
+ L150:
+  
+   //  permute the components of z back to components of x.
+   
+  for (j=0; j<n; j++) 
+  {
+    l = ipvt[j];
+    x[l] = wa[j];
+  }
+
+}
+
+//-----------------------------------------------------------------------------------------------------------
+
+template <typename T>
+void mp_lmpar(std::unordered_map<std::string, data_struct::ArrayTr<T> >& fjac, data_struct::ArrayTr<int>& ipvt, data_struct::ArrayTr<T> &diag,
+	      data_struct::ArrayTr<T>& qtb, T delta, T& par, data_struct::ArrayTr<T>& x,
+	      data_struct::ArrayTr<T>& sdiag, data_struct::ArrayTr<T>& wa1, data_struct::ArrayTr<T>&  wa2) 
+{
+
+  int i,iter,ij,jj,j,jm1,jp1,k,l,nsing;
+  double dxnorm,fp,gnorm,parc,parl,paru;
+  double sum,temp;
+  
+   //     compute and store in x the gauss-newton direction. if the
+   //     jacobian is rank-deficient, obtain a least squares solution.
+  nsing = fjac.size();
+  int n = fjac.size();
+  jj = 0;
+  /*
+  for (j=0; j<n; j++) 
+  {
+    wa1[j] = qtb[j];
+    if ((fjac[jj] == (T)0.0) && (nsing == n))
+    {
+      nsing = j;
+    }
+    if (nsing < n)
+    {
+      wa1[j] = (T)0.0;
+    }
+    jj += ldr+1; // [j+ldr*j] 
+  }
+  
+  if (nsing >= 1) 
+  {
+    for (k=0; k<nsing; k++)
+    {
+      j = nsing - k - 1;
+      wa1[j] = wa1[j] / fjac[j];
+      temp = wa1[j];
+      jm1 = j - 1;
+      if (jm1 >= 0)
+      {
+        ij = ldr * j;
+        for (i=0; i<=jm1; i++)
+        {
+          wa1[i] -= fjac[ij]*temp;
+          ij += 1;
+        }
+      }
+    }
+  }
+  */
+  for (j=0; j<n; j++) 
+  {
+    l = ipvt[j];
+    x[l] = wa1[j];
+  }
+  
+   //     initialize the iteration counter.
+   //     evaluate the function at the origin, and test
+   //     for acceptance of the gauss-newton direction.
+   
+  iter = 0;
+  for (j=0; j<n; j++)
+  {
+    wa2[j] = diag[j] * x[j];
+  }
+  dxnorm = mp_enorm(wa2); //mp_enorm(n,wa2);
+  fp = dxnorm - delta;
+  if (fp <= (T)0.1 * delta)
+  {
+    if (iter == 0)
+    {
+      par = (T)0.0;
+    }
+    return;
+  }
+  
+   //     if the jacobian is not rank deficient, the newton
+   //     step provides a lower bound, parl, for the zero of
+   //     the function. otherwise set this bound to zero.
+   
+  parl = (T)0.0;
+  if (nsing >= n) 
+  {
+    for (j=0; j<n; j++)
+    {
+	    l = ipvt[j];
+	    wa1[j] = diag[l] * (wa2[l] / dxnorm);
+    }
+    jj = 0;
+    j=0;
+    for (auto& itr : fjac)
+    {
+    	sum = (T)0.0;
+    	jm1 = j - 1;
+      if (jm1 >= 0)
+      {
+        ij = jj;
+        for (i=0; i<=jm1; i++)
+        {
+          sum += itr.second[ij]*wa1[i];
+          ij += 1;
+        }
+      }
+	    wa1[j] = (wa1[j] - sum) / itr.second[j];
+	    jj ++; // [i+ldr*j] 
+    }
+    temp = mp_enorm(wa1); //mp_enorm(n,wa1);
+    parl = ( (fp / delta) / temp) / temp;
+  }
+  
+   //     calculate an upper bound, paru, for the zero of the function.
+   
+  jj = 0;
+  j = 0;
+  for (auto& itr : fjac)
+  {
+    sum = (T)0.0;
+    ij = jj;
+    for (i=0; i<=j; i++)
+    {
+	    sum += itr.second[ij]*qtb[i];
+	    ij += 1;
+    }
+    l = ipvt[j];
+    wa1[j] = sum /  diag[l];
+    jj ++; // [i+ldr*j] 
+    j++;
+  }
+  gnorm = mp_enorm(wa1); //mp_enorm(n,wa1);
+  paru = gnorm/delta;
+  if (paru == (T)0.0)
+  {
+    paru = MP_Dwarf<T>() / std::min(delta,(T)0.1);
+  }
+  
+   //     if the input par lies outside of the interval (parl,paru),
+   //     set par to the closer endpoint.
+   
+  par = std::max( par, parl);
+  par = std::min( par, paru);
+  if (par == (T)0.0)
+  {
+    par = gnorm/dxnorm;
+  }
+  
+   //     beginning of an iteration.
+   
+  do
+  {
+    
+    iter += 1;
+    
+    //	 evaluate the function at the current value of par.
+    
+    if (par == (T)0.0)
+    {
+      par = std::max(MP_Dwarf<T>(), (T)0.001 * paru);
+    }
+    temp = sqrt( par );
+    for (j=0; j<n; j++)
+    {
+      wa1[j] = temp*diag[j];
+    }
+
+    mp_qrsolv(fjac,ipvt,wa1,qtb,x,sdiag,wa2);
+
+    for (j=0; j<n; j++)
+    {
+      wa2[j] = diag[j] * x[j];
+    }
+    dxnorm = mp_enorm(wa2); //mp_enorm(n,wa2);
+    temp = fp;
+    fp = dxnorm - delta;
+    
+    //	 if the function is small enough, accept the current value
+    //	 of par. also test for the exceptional cases where parl
+    //	 is zero or the number of iterations has reached 10.
+    
+    if ((fabs(fp) <= (T)0.1 * delta)
+        || ((parl == (T)0.0) && (fp <= temp) && (temp < (T)0.0))
+        || (iter == 10))
+    {
+      break;
+    }
+    
+    //	 compute the newton correction.
+    
+    for (j=0; j<n; j++) 
+    {
+      l = ipvt[j];
+      wa1[j] = diag[l] * (wa2[l] / dxnorm);
+    }
+    jj = 0;
+    j = 0;
+    for (auto& itr : fjac)
+    {
+      wa1[j] = wa1[j] / sdiag[j];
+      temp = wa1[j];
+      jp1 = j + 1;
+      if (jp1 < n)
+      {
+        ij = jp1 + jj;
+        for (i=jp1; i<n; i++)
+        {
+          wa1[i] -= itr.second[ij] * temp;
+          ij += 1; 
+        }
+    }
+    jj ++;
+    j++; 
+    }
+    temp = mp_enorm(wa1);
+    parc = (( fp / delta ) / temp) / temp;
+    
+    //	 depending on the sign of the function, update parl or paru.
+    
+    if (fp > (T)0.0)
+    {
+      parl = std::max(parl, par);
+    }
+    if (fp < (T)0.0)
+    {
+      paru = std::min(paru, par);
+    }
+    
+    //	 compute an improved estimate for par.
+    par = std::max(parl, par + parc);
+  
+  }
+  while((fabs(fp) <= (T)0.1 * delta)
+      || ((parl == (T)0.0) && (fp <= temp) && (temp < (T)0.0))
+      || (iter == 10));
+  
+}
+
+//-----------------------------------------------------------------------------------------------------------
+
+template <typename T>
 Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Parameters<T>& params, Options<T>* my_options, void *user_data)
 {
+  bool qanylim = false;
   if(funct == nullptr)
   {
     return Result<T> (Errors::FUNC);
@@ -716,12 +1114,14 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
           {
             return Result<T> (Errors::INITBOUNDS);
           }
+          qanylim = true;
         break;
         case data_struct::Fit_Bound::LIMITED_LO:
           if( itr.second.value < itr.second.min_val )
           {
             return Result<T> (Errors::INITBOUNDS);
           }
+          qanylim = true;
         break;
         case data_struct::Fit_Bound::LIMITED_LO_HI:
           if( itr.second.value > itr.second.max_val )
@@ -736,6 +1136,7 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
           {
             return Result<T> (Errors::BOUNDS);
           }
+          qanylim = true;
         break;
         default:
         break;
@@ -769,6 +1170,7 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
   T fnorm1 = (T)-1.0;
   T xnorm = (T)-1.0;
   T delta = (T)0.0;
+  T temp = (T)0.0;
 
   data_struct::ArrayTr<T> diag(num_free_params);
   data_struct::ArrayTr<T> qtf(num_free_params);
@@ -793,6 +1195,7 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
   data_struct::ArrayTr<T> wa2(resid_size);
   data_struct::ArrayTr<T> wa3(num_free_params);
   data_struct::ArrayTr<T> wa4(resid_size);
+  data_struct::ArrayTr<T> wa5(num_free_params);
   
   FUNC_RET ret = funct(&params, out_resid, user_data);
   result.nfev += 1;
@@ -806,15 +1209,12 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
   ////result.orignorm = fvec.squaredNorm();
   fnorm = mp_enorm<T>(out_resid);
   result.orignorm = fnorm*fnorm;
-/*
+
   // Make a new copy 
-  for (i=0; i<npar; i++) {
-    xnew[i] = xall[i];
-  }
+  data_struct::Fit_Parameters<T> saved_params = params;
 
   // Initialize Levelberg-Marquardt parameter and iteration counter 
-  par = 0.0;
-  */
+  T par = 0.0;
   size_t iter = 1;
  
   // Beginning of the outer loop 
@@ -926,12 +1326,12 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
     if (itr.second[j] != (T)0.0) 
     {
       T sum = (T)0.0;
-      for (int i=j; i<resid_size; i++ ) 
+      for (size_t i=j; i<resid_size; i++ ) 
       {
         sum += itr.second[i] * wa4[i];
       }
-      T temp = -sum / itr.second[j];
-      for (int i=j; i<resid_size; i++ ) 
+      temp = -sum / itr.second[j];
+      for (size_t i=j; i<resid_size; i++ ) 
       {
         wa4[i] += itr.second[i] * temp;
       }
@@ -948,7 +1348,6 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
     // Check for overflow.  This should be a cheap test here since FJAC
     //   has been reduced to a (small) square matrix, and the test is
     //   O(N^2). 
-    int off = 0, nonfinite = 0;
 
     for (auto& itr: fjac) 
     {
@@ -1003,14 +1402,267 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
       diag[j] = std::max(diag[j],wa2[j]);
     }
   }
+  
+  //	 beginning of the inner loop.
+  T ratio = (T)0.0; 
+  do
+  {
+    //  determine the levenberg-marquardt parameter.
+    mp_lmpar(fjac,ipvt,diag,qtf,delta,par,wa1,wa5,wa3,wa4);
+    
+    // store the direction p and x + p. calculate the norm of p.
+    wa1 *= (T)-1.0;
+
+    T alpha = 1.0;
+    if (false == qanylim) 
+    {
+      // No parameter limits, so just move to new position WA5 
+      for (auto &itr : fjac) 
+      {
+        data_struct::Fit_Param<T>& param = params.at(itr.first);
+        wa5[j] = param.value + wa1[j];
+      }
+
+    }
+    else
+    {
+      // Respect the limits.  If a step were to go out of bounds, then 
+      // we should take a step in the same direction but shorter distance.
+      // The step should take us right to the limit in that case.
+      
+      for (auto &itr : fjac) 
+      {
+        data_struct::Fit_Param<T>& param = params.at(itr.first);
+        bool lpegged = false;
+        bool upegged = false;
+        if(param.bound_type == data_struct::Fit_Bound::LIMITED_LO || param.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI)
+        {
+          lpegged = (param.value <= param.min_val);
+        }
+        if(param.bound_type == data_struct::Fit_Bound::LIMITED_HI || param.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI)
+        {
+          upegged = (param.value >= param.max_val);
+        }
+        int dwa1 = fabs(wa1[j]) > MP_MachEp0<T>();
+        
+        if (lpegged && (wa1[j] < 0)) 
+        {
+          wa1[j] = 0;
+        }
+        if (upegged && (wa1[j] > 0))
+        {
+          wa1[j] = 0;
+        }
+
+        if(param.bound_type == data_struct::Fit_Bound::LIMITED_LO || param.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI)
+        {
+          if (dwa1 && ((param.value + wa1[j]) < param.min_val)) 
+          {
+            alpha = std::min(alpha, (param.min_val - param.value) / wa1[j]);
+          }
+        }
+        if(param.bound_type == data_struct::Fit_Bound::LIMITED_HI || param.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI)
+        {
+          if (dwa1 && ((param.value + wa1[j]) > param.max_val)) 
+          {
+            alpha = std::min(alpha, (param.max_val - param.value) / wa1[j]);
+          }
+        }
+      }
+      
+      // Scale the resulting vector, advance to the next position 
+      for (auto &itr : fjac) 
+      {
+        data_struct::Fit_Param<T>& param = params.at(itr.first);
+        T sgnu, sgnl;
+        T ulim1, llim1;
+
+        wa1[j] = wa1[j] * alpha;
+        wa5[j] = param.value + wa1[j];
+
+        // Adjust the output values.  If the step put us exactly
+        // on a boundary, make sure it is exact.
+        
+        sgnu = (param.max_val >= 0) ? (+1) : (-1);
+        sgnl = (param.min_val >= 0) ? (+1) : (-1);
+        ulim1 = param.max_val * (1 - sgnu * MP_MachEp0<T>()) - ((param.max_val == 0)?(MP_MachEp0<T>()):0);
+        llim1 = param.min_val * (1 + sgnl * MP_MachEp0<T>()) + ((param.min_val == 0)?(MP_MachEp0<T>()):0);
+
+        if(param.bound_type == data_struct::Fit_Bound::LIMITED_HI || param.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI)
+        {
+          if (wa5[j] >= ulim1)
+          {
+            wa5[j] = param.max_val;
+          }
+        }
+        if(param.bound_type == data_struct::Fit_Bound::LIMITED_LO || param.bound_type == data_struct::Fit_Bound::LIMITED_LO_HI)
+        {  
+          if (wa5[j] <= llim1)
+          {
+            wa5[j] = param.min_val;
+          }
+        }
+      }
+
+    }
+
+    wa3 = diag * wa1;    
+
+    T pnorm = mp_enorm(wa3);
+    
+    //   on the first iteration, adjust the initial step bound.
+    if (iter == 1) 
+    {
+      delta = std::min(delta, pnorm);
+    }
+
+    //   evaluate the function at x + p and calculate its norm.
+    int iii = 0;
+    for (auto &itr : fjac) 
+    {
+      saved_params.at(itr.first).value = wa5[iii];
+      iii++;
+    }
+
+    FUNC_RET ret = funct(&saved_params, wa4, user_data);
+    //iflag = mp_call(funct, m, npar, xnew, wa4, 0, private_data);
+    result.nfev += 1;
+    if (ret == FUNC_RET::USER_QUIT)
+    {
+      result.status = Errors::USER_QUIT;  
+      return result;
+    }
 
 
+    fnorm1 = mp_enorm(wa4);
 
+    //	    compute the scaled actual reduction.
+    T actred = -(T)1.0;
+    if (((T)0.1 * fnorm1) < fnorm)
+    {
+      temp = fnorm1 / fnorm;
+      actred = (T)1.0 - temp * temp;
+    }
 
+    //   compute the scaled predicted reduction and the scaled directional derivative.
+    j = 0;
+    for (auto &itr : fjac) 
+    {
+      wa3[j] = (T)0.0;
+      int l = ipvt[j];
+      temp = wa1[l];
+      for (int i=0; i<=j; i++ ) 
+      {
+        wa3[i] += itr.second[i]*temp; 
+      }
+      j++;
+    }
 
+    // Remember, alpha is the fraction of the full LM step actually taken
+    
 
+    T temp1 = mp_enorm(wa3) * alpha / fnorm;
+    T temp2 = (sqrt(alpha * par) * pnorm) / fnorm;
+    T prered = temp1 * temp1 + (temp2 * temp2) / (T)0.5;
+    T dirder = -(temp1 * temp1 + temp2 * temp2);
 
+    //  compute the ratio of the actual to the predicted reduction.
+    if (prered != (T)0.0) 
+    {
+      ratio = actred/prered;
+    }
 
+    //	   update the step bound.
+    
+    
+    if (ratio <= (T)0.25) 
+    {
+      if (actred >= (T)0.0) 
+      {
+        temp = (T)0.5; 
+      }
+      else
+      {
+        temp = (T)0.5*dirder/(dirder + (T)0.5*actred);
+      }
+      if ((((T)0.1 * fnorm1) >= fnorm) || (temp < (T)0.1) )
+      {
+        temp = (T)0.1;
+      }
+      delta = temp * std::min(delta,pnorm / (T)0.1);
+      par = par/temp;
+    }
+    else 
+    {
+      if ((par == (T)0.0) || (ratio >= (T)0.75) ) 
+      {
+        delta = pnorm/(T)0.5;
+        par = (T)0.5*par;
+      }
+    }
+
+    //  test for successful iteration.
+    if (ratio >= (T)1.0e-4)
+    {
+      
+      //   successful iteration. update x, fvec, and their norms.
+      j = 0;
+      for (auto & itr : fjac) 
+      {
+        params.at(itr.first).value = wa5[j];
+        wa5[j] = diag[j] * params.at(itr.first).value;
+        j++;
+      }
+      out_resid = wa4;
+      
+      xnorm = mp_enorm(wa5);
+      fnorm = fnorm1;
+      iter += 1;
+    }
+    
+    //   tests for convergence.
+
+    if ((fabs(actred) <= options.ftol) && (prered <= options.ftol) &&  ((T)0.5*ratio <= (T)1.0) ) 
+    {
+      result.status = Errors::OK_CHI;
+    }
+    if (delta <= options.xtol*xnorm) 
+    {
+      result.status = Errors::OK_PAR;
+    }
+    if ((fabs(actred) <= options.ftol) && (prered <= options.ftol) && ((T)0.5 * ratio <= (T)1.0) && ( result.status == Errors::OK_PAR) ) 
+    {
+      result.status = Errors::OK_BOTH;
+    }
+    if (result.status == Errors::INPUT) 
+    {   
+      //  tests for termination and stringent tolerances.
+      if ((options.maxfev > 0) && (result.nfev >= options.maxfev)) 
+      {
+        // Too many function evaluations 
+        result.status = Errors::MAXITER;
+      }
+      if (iter >= options.maxiter) 
+      {
+        // Too many iterations 
+        result.status = Errors::MAXITER;
+      }
+      if ((fabs(actred) <= MP_MachEp0<T>()) && (prered <= MP_MachEp0<T>()) && ((T)0.5*ratio <= (T)1.0) ) 
+      {
+        result.status = Errors::FTOL;
+      }
+      if (delta <= MP_MachEp0<T>() * xnorm) 
+      {
+        result.status = Errors::XTOL;
+      }
+      if (gnorm <= MP_MachEp0<T>()) 
+      {
+        result.status = Errors::GTOL;
+      }
+    }
+  }  
+  while (result.status == Errors::INPUT || ratio < (T)1.0e-4); // end of the inner loop. repeat if iteration unsuccessful.
+  
   return result;
 }
 

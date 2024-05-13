@@ -60,15 +60,14 @@ void test01()
     DParams params = { {"a", DParam("a", 1.0, data_struct::Fit_Bound::FIT)},
      {"b", DParam("b", 1.0, data_struct::Fit_Bound::FIT)} };
 
-    
-    //double pactual[2] = {3.20, 1.78};   // Actual values used to make data 
     struct vars_struct v(&x, &y, &ey);
 
     // Call fitting function for 10 data points and 2 parameters 
     DResult result = optimize::empfit<double>(linfunc, x.size(), params, nullptr, (void *) &v);
 
     std::cout<<"*** testlinfit status = "<<optimize::ErrorToString(result.status) <<"\n";
-    //printresult(p, pactual, &result);
+    std::cout<< "a = "<< params.at("a").value << " : Actual = 3.20\n";
+    std::cout<< "b = "<< params.at("b").value << " : Actual = 1.78\n";
 }
 
 int main()

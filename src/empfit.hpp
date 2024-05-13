@@ -285,7 +285,7 @@ struct Result
 //-----------------------------------------------------------------------------------------------------------
 
 template <typename T>
-T mp_enorm(data_struct::ArrayTr<T> &out_resid) 
+T mp_enorm(data_struct::ArrayTr<T> &out_resid, int start_offset=0) 
 {
   T rdwarf = MP_RDwarf<T>();
   T rgiant = MP_RGiant<T>();
@@ -303,7 +303,7 @@ T mp_enorm(data_struct::ArrayTr<T> &out_resid)
   
   data_struct::ArrayTr<T> abs_resid = out_resid.abs();
 
-  for (int i=0; i<abs_resid.size(); i++) 
+  for (int i=start_offset; i<abs_resid.size(); i++) 
   {
     xabs = abs_resid[i];
     if ((xabs > rdwarf) && (xabs < agiant))
@@ -569,126 +569,121 @@ FUNC_RET mp_fdjac2(Callback_fuc<T> funct,
 
 //-----------------------------------------------------------------------------------------------------------
 
-void mp_qrfac(int m, int n, double *a,  
-	      int pivot, int *ipvt, 
-	      double *rdiag, double *acnorm, double *wa)
+template <typename T>
+void mp_qrfac(std::unordered_map<std::string, data_struct::ArrayTr<T> >& a, int pivot, data_struct::ArrayTr<int>& ipvt, data_struct::ArrayTr<T>&  rdiag, data_struct::ArrayTr<T>& acnorm, data_struct::ArrayTr<T>&  wa)
 {
-  int i,ij,jj,j,jp1,k,kmax,minmn;
-  double ajnorm,sum,temp;
+  T ajnorm,sum,temp;
 
   // compute the initial column norms and initialize several arrays.
-  ij = 0;
-  for (j=0; j<n; j++) 
+  int j = 0;
+  int m = 0;
+  for(auto& itr: a)
   {
-    ////acnorm[j] = mp_enorm(m, &a[ij]);
+    m = itr.second.size();
+    acnorm[j] = mp_enorm<T>(itr.second);
     rdiag[j] = acnorm[j];
     wa[j] = rdiag[j];
     if (pivot != 0)
     {
       ipvt[j] = j;
     }
-    ij += m; // m * j 
+    j++;
   }
+  
   // reduce a to r with householder transformations.
-  ////minmn = mp_min0(m,n);
-  for (j=0; j<minmn; j++) 
+  int n = a.size();
+  int minmn = std::min(m,n);
+  j = 0;
+  for(auto& itr: a) 
   {
-    if (pivot == 0)
+    if (pivot == 1)
     {
-      goto L40;
-    }
-    // bring the column of largest norm into the pivot position.
-    kmax = j;
-    for (k=j; k<n; k++)
-    {
-	    if (rdiag[k] > rdiag[kmax])
+      // bring the column of largest norm into the pivot position.
+      int kmax = j;
+      for (int k=j; k<n; k++)
       {
-	      kmax = k;
+        if (rdiag[k] > rdiag[kmax])
+        {
+          kmax = k;
+        }
       }
-    }
-    if (kmax == j)
-    {
-      goto L40;
-    }
-      
-    ij = m * j;
-    jj = m * kmax;
-    for (i=0; i<m; i++)
-    {
-      temp = a[ij]; // [i + m * j] 
-      a[ij] = a[jj]; // [i + m * kmax] 
-      a[jj] = temp;
-      ij += 1;
-      jj += 1;
-    }
-    rdiag[kmax] = rdiag[j];
-    wa[kmax] = wa[j];
-    k = ipvt[j];
-    ipvt[j] = ipvt[kmax];
-    ipvt[kmax] = k;
-      
-L40:
+      if (kmax != j)
+      {  
+        int ij = j;
+        int jj = kmax;
+        for (int i=0; i<m; i++)
+        {
+          temp = itr.second[ij]; 
+          itr.second[ij] = itr.second[jj];
+          itr.second[jj] = temp;
+          ij += 1;
+          jj += 1;
+        }
+        rdiag[kmax] = rdiag[j];
+        wa[kmax] = wa[j];
+        int k = ipvt[j];
+        ipvt[j] = ipvt[kmax];
+        ipvt[kmax] = k;
+      }
+    }  
     // compute the householder transformation to reduce the j-th column of a to a multiple of the j-th unit vector.
-    jj = j + m*j;
-    ///ajnorm = mp_enorm<double>(m - j, &a[jj]);
-    if (ajnorm == 0.0)
+    int jj = j;
+    ajnorm = mp_enorm<T>(itr.second, j);
+    if (ajnorm != 0.0)
     {
-      goto L100;
-    }
-    if (a[jj] < 0.0)
-    {
-      ajnorm = -ajnorm;
-    }
-    ij = jj;
-    for (i=j; i<m; i++)
-    {
-    	a[ij] /= ajnorm;
-	    ij += 1; // [i + m * j] 
-    }
-    a[jj] += 1.0;
-    // apply the transformation to the remaining columns and update the norms.
-    jp1 = j + 1;
-    if (jp1 < n)
-    {
-      for (k=jp1; k<n; k++)
+      if (itr.second[jj] < 0.0)
       {
-        sum = 0.0;
-        ij = j + m*k;
-        jj = j + m*j;
-        for (i=j; i<m; i++)
+        ajnorm = -ajnorm;
+      }
+      int ij = jj;
+      for (int i=j; i<m; i++)
+      {
+        itr.second[ij] /= ajnorm;
+        ij += 1; 
+      }
+      itr.second[jj] += 1.0;
+      // apply the transformation to the remaining columns and update the norms.
+      int jp1 = j + 1;
+      if (jp1 < n)
+      {
+        for (int k=jp1; k<n; k++)
         {
-          sum += a[jj]*a[ij];
-          ij += 1; // [i+m*k] 
-          jj += 1; // [i+m*j] 
-        }
-        temp = sum/a[j+m*j];
-        ij = j + m*k;
-        jj = j + m*j;
-        for (i=j; i<m; i++)
-        {
-          a[ij] -= temp*a[jj];
-          ij += 1; // [i+m*k] 
-          jj += 1; // [i+m*j] 
-        }
-        if ((pivot != 0) && (rdiag[k] != 0.0))
-        {
-          temp = a[j+m*k]/rdiag[k];
-          ////temp = mp_dmax1( 0.0, 1.0 - temp * temp );
-          rdiag[k] *= sqrt(temp);
-          temp = rdiag[k] / wa[k];
-          ////if (((T)0.05 * temp * temp) <= MP_MachEp0<T>())
+          sum = 0.0;
+          ij = j + k;
+          jj = j + j;
+          for (int i=j; i<m; i++)
           {
-            ////rdiag[k] = mp_enorm(m-j-1,&a[jp1+m*k]);
-            wa[k] = rdiag[k];
-		      }
-	      }
-  	  }
-    }
-      
-L100:
+            sum += itr.second[jj] * itr.second[ij];
+            ij += 1; 
+            jj += 1; 
+          }
+          temp = sum / itr.second[j];
+          ij = j + k;
+          jj = j + j;
+          for (int i=j; i<m; i++)
+          {
+            itr.second[ij] -= temp * itr.second[jj];
+            ij += 1;
+            jj += 1;
+          }
+          if ((pivot != 0) && (rdiag[k] != 0.0))
+          {
+            temp = itr.second[j+k] / rdiag[k];
+            temp = std::max( 0.0, 1.0 - temp * temp );
+            rdiag[k] *= sqrt(temp);
+            temp = rdiag[k] / wa[k];
+            if (((T)0.05 * temp * temp) <= MP_MachEp0<T>())
+            {
+              rdiag[k] = mp_enorm(itr.second, jp1+k);
+              wa[k] = rdiag[k];
+            }
+          }
+        }
+      }
+    }  
     rdiag[j] = -ajnorm;
+    j++;
   }
-
 }
 
 //-----------------------------------------------------------------------------------------------------------
@@ -776,7 +771,8 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
   T delta = (T)0.0;
 
   data_struct::ArrayTr<T> diag(num_free_params);
-
+  data_struct::ArrayTr<T> qtf(num_free_params);
+  qtf.setZero(num_free_params);
   // Initialize the Jacobian derivative matrix 
   // param_name, jac array
   std::unordered_map<std::string, data_struct::ArrayTr<T> > fjac;
@@ -790,8 +786,12 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
   }
   data_struct::MatrixTr<T> A = data_struct::MatrixTr<T>::Zero(resid_size, params.size()); // Used for QR decomp of fjac
 
+  data_struct::ArrayTr<int> ipvt(num_free_params);
+  data_struct::ArrayTr<T> acnorm(num_free_params);
   // alloc work array so we don't need to keep allocating in the functions
+  data_struct::ArrayTr<T> wa1(num_free_params);
   data_struct::ArrayTr<T> wa2(resid_size);
+  data_struct::ArrayTr<T> wa3(num_free_params);
   data_struct::ArrayTr<T> wa4(resid_size);
   
   FUNC_RET ret = funct(&params, out_resid, user_data);
@@ -801,7 +801,9 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
     result.status = Errors::USER_QUIT;  
   }
 
-
+  // try and compare with 
+  ////data_struct::VectorTr<T> fvec = out_resid;
+  ////result.orignorm = fvec.squaredNorm();
   fnorm = mp_enorm<T>(out_resid);
   result.orignorm = fnorm*fnorm;
 /*
@@ -814,16 +816,11 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
   par = 0.0;
   */
   size_t iter = 1;
- /*
-  for (i=0; i<nfree; i++) 
-  {
-    qtf[i] = 0;
-  }
-
+ 
   // Beginning of the outer loop 
- OUTER_LOOP:
+ ////OUTER_LOOP:
   
-*/
+
   ret = mp_fdjac2(funct, params, out_resid, fjac, options.epsfcn, wa4, user_data, result, wa2);
   if(ret == FUNC_RET::USER_QUIT)
   {
@@ -875,12 +872,15 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
 
   // Compute the QR factorization of the jacobian 
   // 1 = pivot , ipvt is identity matrix, Fjac is M x N (nfree) . wa1 (maybe Q), wa2 (diag),  wa3 (temp storage)
-  ////mp_qrfac(m, nfree, fjac, 1, ipvt,  wa1, wa2, wa3);
+  mp_qrfac(fjac, 1, ipvt,  wa1, acnorm, wa3);
+  /*
   // use eigen QR decomp ColPivHouseholderQR or FullPivHouseholderQR
   // Fill A with fjac
   int r=0;
   for(auto& itr : fjac)
   {
+    // do this only if we call FullPivHouseholderQR, otherwise it is handled in mp_qrfac
+    acnorm[r] = mp_enorm<T>(itr.second);
     for(int c = 0; c < resid_size; c++)
     {
       A(r,c) = itr.second(c);
@@ -888,88 +888,127 @@ Result<T> empfit(Callback_fuc<T> funct, size_t resid_size, data_struct::Fit_Para
     r++;
   }
   Eigen::FullPivHouseholderQR<data_struct::MatrixTr<T>> qr(A);
-/*
-
-    data_struct::MatrixTr<T> A = MatrixXd::Random(rows, cols); // Generate a random rectangular matrix
-    data_struct::VectorTr<T> b = VectorXd::Random(rows); // Generate a random vector for the linear system
-
-    // Perform FullPivHouseholderQR decomposition with pivoting
-    FullPivHouseholderQR<MatrixXd> qr(A);
-
-    // Solve a linear system of equations using the QR decomposition
-    VectorXd x = qr.solve(b);
-
-    // Output the original matrix, solution vector, and reconstructed matrix
-    std::cout << "Original Rectangular Matrix A:\n" << A << "\n\n";
-    std::cout << "Right-hand side vector b:\n" << b << "\n\n";
-    std::cout << "Solution vector x:\n" << x << "\n\n";
-    std::cout << "Reconstructed Matrix from QR Decomposition with Pivoting:\n" << qr.householderQ() * qr.matrixQR() << "\n";
-*/
+  // Solve a linear system of equations using the QR decomposition
+  //VectorXd x = qr.solve(b);
+  //std::cout << "Reconstructed Matrix from QR Decomposition with Pivoting:\n" << qr.householderQ() * qr.matrixQR() << "\n";
+  */
 
 // on the first iteration and if mode is 1, scale according to the norms of the columns of the initial jacobian.
-/*
+
   if (iter == 1) 
   {
     if (options.douserscale == 0) 
     {
-      for (j=0; j<nfree; j++) 
-      {
-	      diag[ifree[j]] = wa2[j];
-	      if (wa2[j] == (T)0.0 ) 
-        {
-	        diag[ifree[j]] = (T)1.0;
-	      }
-      }
+      diag = acnorm.unaryExpr([](T v) { return v == 0.0 ? (T)1.0 : v; });
     }
 
-    // on the first iteration, calculate the norm of the scaled x and initialize the step bound delta.
-    for (j=0; j<nfree; j++ ) 
+    for(auto& itr: fjac)
     {
-      wa3[j] = diag[ifree[j]] * x[j];
+      data_struct::Fit_Param<T>& param = params.at(itr.first);
+      // on the first iteration, calculate the norm of the scaled x and initialize the step bound delta.
+      wa3 = diag * param.value;
     }
     
-    xnorm = mp_enorm(nfree, wa3);
+    xnorm = mp_enorm<T>(wa3);
     delta = options.stepfactor*xnorm;
-    if (delta == (T)0.0))
+    if (delta == (T)0.0)
     {
        delta = options.stepfactor;
     }
   }
 
   // form (q transpose)*fvec and store the first n components in qtf.
-  for (i=0; i<m; i++ ) 
-  {
-    wa4[i] = fvec[i];
-  }
+  wa4 = out_resid;
 
-  jj = 0;
-  for (j=0; j<nfree; j++ ) 
+  int j=0;
+  for(auto &itr : fjac)
   {
-    temp3 = fjac[jj];
-    if (temp3 != (T)0.0) 
+    if (itr.second[j] != (T)0.0) 
     {
-      sum = zero;
-      ij = jj;
-      for (i=j; i<m; i++ ) 
+      T sum = (T)0.0;
+      for (int i=j; i<resid_size; i++ ) 
       {
-        sum += fjac[ij] * wa4[i];
-        ij += 1;	// fjac[i+m*j]
+        sum += itr.second[i] * wa4[i];
       }
-      temp = -sum / temp3;
-      ij = jj;
-      for (i=j; i<m; i++ ) 
+      T temp = -sum / itr.second[j];
+      for (int i=j; i<resid_size; i++ ) 
       {
-        wa4[i] += fjac[ij] * temp;
-        ij += 1;	// fjac[i+m*j] 
+        wa4[i] += itr.second[i] * temp;
       }
     }
-    fjac[jj] = wa1[j];
-    jj += m+1;	// fjac[j+m*j] 
+    itr.second[j] = wa1[j];
     qtf[j] = wa4[j];
+    j++;
+  }
+
+  // ( From this point on, only the square matrix, consisting of the triangle of R, is needed.) 
+
+  if (options.nofinitecheck) 
+  {
+    // Check for overflow.  This should be a cheap test here since FJAC
+    //   has been reduced to a (small) square matrix, and the test is
+    //   O(N^2). 
+    int off = 0, nonfinite = 0;
+
+    for (auto& itr: fjac) 
+    {
+	    if (itr.second.isInf().any()) 
+      {
+        result.status = Errors::NotANum;
+        return result;
+      }
+    }
+
+  }
+
+  //  compute the norm of the scaled gradient.
+  T gnorm = (T)0.0;
+  if (fnorm != (T)0.0) 
+  {
+    int j=0;
+    for (auto& itr: fjac) 
+    {
+      int l = ipvt[j];
+      if (wa2[l] != (T)0.0) 
+      {
+        T sum = (itr.second * (qtf[j]/fnorm)).sum();
+	      gnorm = std::max(gnorm,fabs(sum/wa2[l]));
+      }
+      j++;
+    }
   }
 
 
-*/
+  //	 test for convergence of the gradient norm.
+  if (gnorm <= options.gtol)
+  {
+     result.status = Errors::OK_DIR;
+  }
+  if (result.status != Errors::INPUT)
+  {
+     ////goto L300;
+  }
+  if (options.maxiter == 0) 
+  {
+    result.status = Errors::MAXITER;
+    ////goto L300;
+  }
+
+  //	 rescale if necessary.
+  if (options.douserscale == 0) 
+  {
+    int j=0;
+    for (auto& itr: fjac) 
+    {
+      diag[j] = std::max(diag[j],wa2[j]);
+    }
+  }
+
+
+
+
+
+
 
 
   return result;
